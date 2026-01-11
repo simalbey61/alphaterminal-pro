@@ -1,0 +1,19 @@
+# Render.com deployment configuration
+# Bu dosya Render'a nasıl deploy edileceğini söyler
+
+services:
+  # Backend API
+  - type: web
+    name: alphaterminal-api
+    runtime: python
+    region: frankfurt  # Türkiye'ye yakın
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: ENVIRONMENT
+        value: production
+    healthCheckPath: /api/v2/health
+    autoDeploy: true  # GitHub push = otomatik deploy

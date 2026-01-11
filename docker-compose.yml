@@ -1,0 +1,150 @@
+version: '3.9'
+
+services:
+  # BACKEND - FastAPI
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: alpha-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://alpha:${DB_PASSWORD:-alphapass}@postgres:5432/alphaterminal
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - alpha-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # FRONTEND - React/Vite
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: alpha-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - alpha-network
+
+  # DATABASE - PostgreSQL
+  postgres:
+    image: postgres:16-alpine
+    container_name: alpha-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=alpha
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-alphapass}
+      - POSTGRES_DB=alphaterminal
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - alpha-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U alpha -d alphaterminal"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # CACHE - Redis
+  redis:
+    image: redis:7-alpine
+    container_name: alpha-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - alpha-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # REVERSE PROXY - Nginx
+  nginx:
+    image: nginx:alpine
+    container_name: alpha-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - backend
+      - frontend
+    networks:
+      - alpha-network
+
+  # CELERY WORKER
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: alpha-celery-worker
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://alpha:${DB_PASSWORD:-alphapass}@postgres:5432/alphaterminal
+      - REDIS_URL=redis://redis:6379/0
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - alpha-network
+
+  # CELERY BEAT (Scheduler)
+  celery-beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: alpha-celery-beat
+    restart: unless-stopped
+    command: celery -A app.tasks.celery_app beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://alpha:${DB_PASSWORD:-alphapass}@postgres:5432/alphaterminal
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - alpha-network
+
+networks:
+  alpha-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
